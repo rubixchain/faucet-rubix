@@ -5,7 +5,8 @@ function App() {
   const [username, setUsername] = useState('');
   const [message, setMessage] = useState('');
   const [messageType, setMessageType] = useState('');
- 
+   const [loading, setLoading] = useState(false);
+
  async function getClientIP() {
   const response = await fetch('https://api64.ipify.org?format=json');
   const data = await response.json();
@@ -14,7 +15,7 @@ function App() {
   const submitUsername = async () => {
     if (!username) {
       setMessage('Please enter DID.');
-      setMessageType('error')
+      setMessageType('error');
       return;
     }
 
@@ -23,6 +24,9 @@ function App() {
       setMessageType('error');
       return;
     }
+
+    setLoading(true);
+    setMessage('');
 
     try {
 
@@ -36,16 +40,16 @@ function App() {
 
       const result = await response.text();
       setMessage(result);
+      setMessageType(response.status === 429 ? 'error' : 'success');
 
-      if (response.status === 429) {
-        setMessageType('error')
-      } else {
-        setMessageType('success')
+      if (response.status !== 429) {
         setUsername('');
       }
     } catch (error) {
       setMessage('Error submitting DID.');
-      setMessageType('error')
+      setMessageType('error');
+    } finally {
+      setLoading(false);
     }
   };
   // console.log(userDetails,username )
@@ -60,8 +64,10 @@ function App() {
         onChange={(e) => setUsername(e.target.value)}
         placeholder="Enter DID"
       />
-      <button onClick={submitUsername}>Submit</button>
-      <div className={'message ${messageType}'}>{message}</div>
+      <button onClick={submitUsername} disabled={loading}>
+        {loading ? <div className="loader"></div> : 'Submit'}
+      </button>
+      <div className={`message ${messageType}`}>{message}</div>
     </div>
   );
 }
