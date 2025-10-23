@@ -64,6 +64,38 @@ const writeCounterToFile = async (counter) => {
     await fs.writeFile(counterFilePath, JSON.stringify(data, null, 2));
 };
 
+// The function which converts the milliseconds into 
+// an appropriate string based format
+// Its either in minutes or hour-minutes if minutes is greater than 60
+const formatWaitTime = (milliseconds) => {
+  // Convert milliseconds to total seconds
+  const totalSeconds = Math.floor(milliseconds / 1000);
+  
+  // If less than 60 seconds, show only seconds
+  if (totalSeconds < 60) {
+    return `${totalSeconds} sec${totalSeconds !== 1 ? 's' : ''}`;
+  }
+  
+  // Convert to total minutes
+  const totalMinutes = Math.floor(milliseconds / (1000 * 60));
+  
+  // If less than 60 minutes, show only minutes
+  if (totalMinutes < 60) {
+    return `${totalMinutes} min${totalMinutes !== 1 ? 's' : ''}`;
+  }
+  
+  // Calculate hours and remaining minutes
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  
+  // Build the display string
+  if (minutes === 0) {
+    return `${hours} hour${hours !== 1 ? 's' : ''}`;
+  }
+  
+  return `${hours} hour${hours !== 1 ? 's' : ''} ${minutes} min${minutes !== 1 ? 's' : ''}`;
+};
+
 // Initialize the counter value
 let counter = 0;
 
@@ -106,12 +138,14 @@ app.post('/increment', async (req, res) => {
     if (nodeAddress === "") {
         console.error('RUBIX_NODE_ADDRESS is not set')
         res.status(500).send({"error": "internal server error"})
+        return
     }
 
     const { username } = req.body;
 
     if (!username || typeof username !== 'string') {
         res.status(400).send({'error': 'username is required and must be a string'});
+        return
     }
 
     const currentTime = Date.now();
@@ -119,12 +153,17 @@ app.post('/increment', async (req, res) => {
     db.get('SELECT timestamp FROM users WHERE username = ?', [username], (err, row) => {
         if (err) {
             res.status(500).send({"error": 'Database error'});
+            return
         }
 
         if (row) {
             const lastRequestTime = row.timestamp;
             if (currentTime - lastRequestTime < requestTimeoutInMilliSeconds) {
-                res.status(429).send({"error": 'Request denied. Try again after one hour.'});
+
+                const timeLeft = (requestTimeoutInMilliSeconds - (currentTime - lastRequestTime))
+                const timeLeftStr = formatWaitTime(timeLeft)
+                res.status(429).send({"error": `Request denied. Try again in ${timeLeftStr}`});
+                return
             }
         }
 
@@ -132,6 +171,7 @@ app.post('/increment', async (req, res) => {
         db.run('REPLACE INTO users (username, timestamp) VALUES (?, ?)', [username, currentTime], async (err) => {
             if (err) {
                 res.status(500).send({"error": 'Database error'});
+                return
             }
 
             counter++;
