@@ -354,13 +354,13 @@ app.post('/increment', async (req, res) => {
                 );
                 console.log('Database updated successfully.');
             } else {
-                console.log('Transaction not successful:', secondResponse.data.message);
-                res.json({ success: false, message: `failed to transfer tokens, err: ${secondRequestData.data["message"]}}`})
+                console.log('Transaction not successful:', signatureResponse.data.message);
+                res.json({ success: false, message: `failed to transfer tokens, err: ${signatureResponse.data["message"]}}`})
                 return
             }
         } else {
-            res.json({ success: false, message: `failed to transfer tokens, err: ${secondRequestData.data["message"]}}`})
-            console.log('Invalid response from second API:', secondResponse.data);
+            res.json({ success: false, message: `failed to transfer tokens, err: ${signatureResponse.data["message"]}}`})
+            console.log('Invalid response from second API:', signatureResponse.data);
             return
         }
         //   await dbRunAsync(
