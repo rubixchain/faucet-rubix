@@ -7,17 +7,26 @@ const cors = require('cors');
 const rateLimit = require('express-rate-limit');
 const helmet = require('helmet'); // for security headers
 const app = express();
-
-const port = process.env.SERVER_PORT;
-if (port === undefined) {
-    console.error("SERVER_PORT env was not provided")
-    return
-}
-
 const crypto = require('crypto');
 const axios = require('axios');
 const counterFilePath = 'counter.json';
 const dbFilePath = 'counter.db';
+const FAUCET_ID = "faucettestrbt";
+
+
+const sourceIp = process.env.ALLOWED_IP
+const origin = process.env.ORIGIN
+const requestWaitTimeInMilliseconds = process.env.REQUEST_WAIT_TIME_IN_SECONDS * 1000
+const nodeAddress = process.env.RUBIX_NODE_ADDRESS
+const port = process.env.SERVER_PORT
+const tokenRequestAmount = parseFloat(process.env.FAUCET_REQUEST_AMOUNT)
+const faucetDid = process.env.FAUCET_DID
+
+
+if (tokenRequestAmount > 1.0) {
+    console.error(`invalid value for FAUCET_REQUEST_AMOUNT which is ${tokenRequestAmount}`)
+    return
+}
 
 // Initialize database
 const db = new sqlite3.Database(dbFilePath, (err) => {
@@ -28,17 +37,42 @@ const db = new sqlite3.Database(dbFilePath, (err) => {
         db.run(`CREATE TABLE IF NOT EXISTS users (
             username TEXT PRIMARY KEY,
             timestamp INTEGER
-        )`);
+        )`, (err) => {
+            if (err) {
+                console.error('Error creating users table:', err.message);
+            }
+        });
+        db.run(`CREATE TABLE IF NOT EXISTS token_level_details (
+            faucetID TEXT PRIMARY KEY,
+            token_level INTEGER,
+            last_token_num INTEGER,
+            total_count INTEGER,
+            tokens_transferred INTEGER
+        )`, (err) => {
+            if (err) {
+                console.error('Error creating token_level_details table:', err.message);
+            } else {
+                // Insert initial values only after the table is created
+                db.run(`INSERT OR IGNORE INTO token_level_details (faucetID, token_level, last_token_num, total_count,tokens_transferred) VALUES (?, ?, ?, ?,?)`,
+                    [FAUCET_ID, 1, 0, 0, 0],
+                    function (err) {
+                        if (err) {
+                            console.error("Error inserting initial values:", err.message);
+                        }
+                    });
+            }
+        });
     }
 });
+
 
 function calculateSHA3_256Hash(number) {
     // Convert number to string
     const numberString = number.toString();
-    
+
     // Calculate SHA3-256 hash
     const hash = crypto.createHash('sha3-256').update(numberString, 'utf8').digest('hex');
-    
+
     return hash;
 }
 
@@ -46,7 +80,6 @@ function calculateSHA3_256Hash(number) {
 const readCounterFromFile = async () => {
     try {
         const data = await fs.readFile(counterFilePath, 'utf8');
-        console.log("sdasasd: ", data)
         return JSON.parse(data).counter;
     } catch (error) {
         if (error.code === 'ENOENT') {
@@ -63,6 +96,119 @@ const writeCounterToFile = async (counter) => {
     const data = { counter };
     await fs.writeFile(counterFilePath, JSON.stringify(data, null, 2));
 };
+
+// Initialize the counter value
+let counter = 0;
+
+const initializeCounter = async () => {
+    counter = await readCounterFromFile();
+};
+
+app.use(cors({
+    origin: origin,
+    methods: ['GET', 'POST', 'OPTIONS'],
+    allowedHeaders: ['Content-Type'],
+}));
+app.use(express.json());
+// Security headers
+app.use(helmet());
+
+// Rate limiter for the /increment endpoint
+const limiter = rateLimit({
+    windowMs: 60 * 60 * 1000, // 60 Mins
+    max: 200, // Limit each IP to 200 requests per windowMs
+    message: 'Too many requests from this IP, please try again later.',
+});
+app.use('/increment', (req, res, next) => {
+    const source_ip = req.ip; // Get the requester's IP address
+    if (req.headers['x-forwarded-for']) {
+        const forwardedIps = req.headers['x-forwarded-for'].split(',');
+        source_ip = forwardedIps[0]; // Get the first IP in the list (real client IP)
+    }
+    console.log("source_ip : ", source_ip)
+    if (source_ip === sourceIp) {
+        next(); // Skip the rate limiter for this IP
+    } else {
+        limiter(req, res, next); // Apply the rate limiter
+    }
+});
+
+const allowedIPs = ["127.0.0.1", "::1"];
+
+app.use((req, res, next) => {
+
+    const source_ip = req.ip; // Get the requester's IP address
+    if (req.headers['x-forwarded-for']) {
+        const forwardedIps = req.headers['x-forwarded-for'].split(',');
+        source_ip = forwardedIps[0]; // Get the first IP in the list (real client IP)
+        console.log("source_ip : ", forwardedIps)
+    }
+
+    console.log("access")
+    const clientIP = req.socket.remoteAddress;
+
+    console.log(clientIP)
+    console.log("reqIP : ", req.ip)
+    let formattedIP = clientIP;
+    if (clientIP.startsWith('::ffff:')) {
+        formattedIP = clientIP.split('::ffff:')[1];
+    }
+    if (req.path === '/api/get-faucet-quorums' || req.path === '/api/current-token-value') {
+        return next(); // Skip IP restrictions
+    }
+    if (allowedIPs.includes(formattedIP)) {
+        next(); // Allow the request
+    } else {
+        res.status(403).json({ status: false, message: 'Access denied: Unauthorized IP or port' });
+    }
+});
+
+app.get('/api/current-token-value', (req, res) => {
+    db.get(`SELECT token_level AS token_level, faucetID AS faucet_id, last_token_num AS current_token_number, total_count AS total_count FROM token_level_details WHERE faucetID = ?`, [FAUCET_ID], (err, tokenDetails) => {
+        if (err) {
+            console.error(err.message);
+            res.status(500).json({ status: false, message: "Database error" });
+            return;
+        }
+        if (tokenDetails) {
+            // Send the token details as JSON
+            res.json(tokenDetails);
+        } else {
+            res.status(404).json({ status: false, message: "Token not found" });
+        }
+    });
+});
+
+app.post('/api/update-token-value', (req, res) => {
+    const { token_level, faucet_id, current_token_number, total_count } = req.body;
+    // Update the database with the new token details
+    db.run(
+        `UPDATE token_level_details SET token_level = ?, last_token_num = ?, total_count=? WHERE faucetID = ?`,
+        [token_level, current_token_number, total_count, faucet_id],
+        function (err) {
+            if (err) {
+                console.error(err.message);
+                res.status(500).json({ status: false, message: "Database update error" });
+                return;
+            }
+            res.json({ success: true, message: "Token info has been updated" });
+        }
+    );
+});
+
+const faucetQuorumList = [
+    "bafybmidhksbjcxypelpd2pmiypikttqntrukr55lmdm34oteiile6lu2jm",
+    "bafybmihwoigjddxqpqoyn7e67w2agxx2apfahl676fkijtlzj2vwmb7v44",
+    "bafybmibeoj772f5bvkoljeymipgzu7p4j32j73tc4detm4wpc5hebolvd4",
+    "bafybmigemcjb6ivksuyiuf23geykag3tvw4jtuxqaesjpggrlnujmowx2i",
+    "bafybmid6gcm6dcubsacyxpg7nmmpzo7czia5cs57s5l2xtn364ijqgqwhe",
+    "bafybmicmngm6twtypkwebnzubwx6k2zl2r7inao3vhxjdl7c5mqa2avezm",
+    "bafybmihnveuzhv66t54r7s5oorwlhf2bwdxsshrjsmwgkdupcdhi2bqasa"
+];
+// Define the endpoint to add faucet quorums
+app.get("/api/get-faucet-quorums", (req, res) => {
+    res.json(faucetQuorumList);
+});
 
 // The function which converts the milliseconds into 
 // an appropriate string based format
@@ -96,157 +242,201 @@ const formatWaitTime = (milliseconds) => {
   return `${hours} hour${hours !== 1 ? 's' : ''} ${minutes} min${minutes !== 1 ? 's' : ''}`;
 };
 
-// Initialize the counter value
-let counter = 0;
-
-const initializeCounter = async () => {
-    counter = await readCounterFromFile();
+// Promisified db.get function
+const dbGetAsync = (query, params) => {
+    return new Promise((resolve, reject) => {
+        db.get(query, params, (err, row) => {
+            if (err) {
+                reject(err);
+            } else {
+                resolve(row);
+            }
+        });
+    });
 };
 
-const sourceIp = process.env.ALLOWED_IP
-const origin = process.env.ORIGIN
+// Promisified db.run function
+const dbRunAsync = (query, params) => {
+    return new Promise((resolve, reject) => {
+        db.run(query, params, function (err) {
+            if (err) {
+                reject(err);
+            } else {
+                resolve(this);
+            }
+        });
+    });
+};
 
-app.use(express.json());
-app.use(cors({
-    origin: origin,
-    methods: ['GET', 'POST','OPTIONS'],
-    allowedHeaders: ['Content-Type'],
-}));
-// Security headers
-app.use(helmet());
-
-// Rate limiter for the /increment endpoint
-const limiter = rateLimit({
-    windowMs: 60 * 60 * 1000, // 60 Mins
-    max: 200, // Limit each IP to 200 requests per windowMs
-    message: 'Too many requests from this IP, please try again later.',
-});
-app.use('/increment', (req, res, next) => {
-    const source_ip = req.ip; // Get the requester's IP address
-    if (source_ip === sourceIp) {
-        next(); // Skip the rate limiter for this IP
-    } else {
-        next()
-    }
-});
-
-const requestTimeoutInMilliSeconds = process.env.REQUEST_TIMEOUT_IN_SECONDS * 1000
-
-// Increment the counter and save it to the file
 app.post('/increment', async (req, res) => {
-    const nodeAddress = process.env.RUBIX_NODE_ADDRESS
-    if (nodeAddress === "") {
-        console.error('RUBIX_NODE_ADDRESS is not set')
-        res.status(500).send({"error": "internal server error"})
-        return
-    }
-
+    console.log("Increment endpoint called"); // Log when the endpoint is called
+    console.log("Request body:", req.body);
+    
     const { username } = req.body;
 
     if (!username || typeof username !== 'string') {
-        res.status(400).send({'error': 'username is required and must be a string'});
-        return
+        return res.status(400).send('Username is required and must be a string');
     }
 
     const currentTime = Date.now();
 
-    db.get('SELECT timestamp FROM users WHERE username = ?', [username], (err, row) => {
-        if (err) {
-            res.status(500).send({"error": 'Database error'});
-            return
-        }
+    try {
+        // Check if the user has made a request within the last hour
+        const userRow = await dbGetAsync('SELECT timestamp FROM users WHERE username = ?', [username]);
 
-        if (row) {
-            const lastRequestTime = row.timestamp;
-            if (currentTime - lastRequestTime < requestTimeoutInMilliSeconds) {
+        if (userRow) {
+            const lastRequestTime = userRow.timestamp;
+            const timeElapsed = currentTime - lastRequestTime;
 
-                const timeLeft = (requestTimeoutInMilliSeconds - (currentTime - lastRequestTime))
+            if (timeElapsed < requestWaitTimeInMilliseconds) {
+                const timeLeft = requestWaitTimeInMilliseconds - timeElapsed;
                 const timeLeftStr = formatWaitTime(timeLeft)
-                res.status(429).send({"error": `Request denied. Try again in ${timeLeftStr}`});
-                return
+                return res.status(429).send( { status: false, message: `Request denied. Try again in ${timeLeftStr}`});
             }
         }
+        // Update the user's timestamp
+        await dbRunAsync('REPLACE INTO users (username, timestamp) VALUES (?, ?)', [username, currentTime]);
 
-        // Update timestamp and increment counter
-        db.run('REPLACE INTO users (username, timestamp) VALUES (?, ?)', [username, currentTime], async (err) => {
-            if (err) {
-                res.status(500).send({"error": 'Database error'});
-                return
+        // Increment the counter and write it to the file
+        counter++;
+        await writeCounterToFile(counter);
+        const hash = calculateSHA3_256Hash(counter);
+
+        // First API request
+        const initiateTransferURL = `${nodeAddress}/api/initiate-rbt-transfer`;
+        const initiateTransferData = {
+            comment: "",
+            receiver: username,
+            sender: faucetDid,
+            tokenCount: tokenRequestAmount,
+            type: 2
+        };
+
+        const initiateTransferResponse = await axios.post(initiateTransferURL, initiateTransferData, {
+            headers: {
+                'Accept': 'application/json',
+                'Content-Type': 'application/json'
             }
-
-            counter++;
-            await writeCounterToFile(counter);
-            const hash = calculateSHA3_256Hash(counter);
         });
 
-        const axios = require('axios');
-
-        // First API URL and data
-        const rbtTransferAPIObj = new URL('/api/initiate-rbt-transfer', nodeAddress)
-        const rbtTransferAPIUrl = rbtTransferAPIObj.href;
-        const rbtTransferAPIRequest = {
-          comment: "",
-          receiver: username,
-          sender: process.env.FAUCET_DID,
-          tokenCount: parseFloat(process.env.FAUCET_REQUEST_AMOUNT),
-          type: 2
-        };
-        
-        // Second API URL
-        const signatureResponseObj = new URL('/api/signature-response', nodeAddress)
-        const signatureResponseAPIUrl = signatureResponseObj.href;
-        
-        // Make the first API request
-        axios.post(rbtTransferAPIUrl, rbtTransferAPIRequest, {
-          headers: {
-            'Accept': 'application/json',
-            'Content-Type': 'application/json'
-          }
-        })
-        .then(response => {
-          // Extract data from the first response
-          const apiRespBody = response.data;
-          if (!apiRespBody["status"]) {
+        const initiateTransferResponseBody = initiateTransferResponse.data
+        if (!initiateTransferResponseBody["status"]) {
             console.error("error occured while calling RBT Transfer API, error: ", apiRespBody["message"])
             res.status(500).send({"error": "internal server error"})
             return
-          }
+        }
 
-          const id = response.data.result.id;
+        const id = initiateTransferResponseBody.result.id;
 
-          // Prepare the second request data using the response from the first request
-          const secondRequestData = {
-            id: id, // Replace with actual key from first response
+        // Second API request
+        const signatureResponseURL = `${nodeAddress}/api/signature-response`;
+        const signatureResponseData = {
+            id: id,
             password: 'mypassword'
-          };
-        
-          // Make the second API request
-          return axios.post(signatureResponseAPIUrl, secondRequestData, {
+        };
+
+        const signatureResponse = await axios.post(signatureResponseURL, signatureResponseData, {
             headers: {
-              'Accept': 'application/json',
-              'Content-Type': 'application/json'
+                'Accept': 'application/json',
+                'Content-Type': 'application/json'
             }
-          });
-        })
-        .then(response => {
-          // Handle the response from the second API request
-          const reqAmtValue = parseFloat(process.env.FAUCET_REQUEST_AMOUNT).toFixed(3)
-          console.log('Second API Response:', response.data);
-          
-          res.status(200).send({
-            "message": `${reqAmtValue} RBT has been transferred successfully to ${username}`
-          })
-        })
-        .catch(error => {
-          // Handle errors from either request
-          console.error('Error:', error);
-            res.send(500).send({
-                "error": `failed to transfer token to ${username}, err: ${error}`
-            })
         });
 
-    });
+        console.log('Second API Response:', signatureResponse.data);
+
+        // Update tokens_transferred in the database
+        if (signatureResponse.data && signatureResponse.data.message) {
+            if (signatureResponse.data.message.includes('Transfer finished successfully')) {
+                // Update tokens_transferred in the database
+                await dbRunAsync(
+                    `UPDATE token_level_details SET tokens_transferred = tokens_transferred + ? WHERE faucetID = ?`,
+                    [tokenRequestAmount, FAUCET_ID]
+                );
+                console.log('Database updated successfully.');
+            } else {
+                console.log('Transaction not successful:', secondResponse.data.message);
+                res.json({ success: false, message: `failed to transfer tokens, err: ${secondRequestData.data["message"]}}`})
+                return
+            }
+        } else {
+            res.json({ success: false, message: `failed to transfer tokens, err: ${secondRequestData.data["message"]}}`})
+            console.log('Invalid response from second API:', secondResponse.data);
+            return
+        }
+        //   await dbRunAsync(
+        //   `UPDATE token_level_details SET tokens_transferred = tokens_transferred + ? WHERE faucetID = ?`,
+        //   [tokenCount, FAUCET_ID]
+        //   );
+
+        // Send the final response after all operations are done
+        res.json({ success: true, message: hash });
+
+    } catch (error) {
+        console.error('Error:', error);
+        res.status(500).send({ success: false, message: `Error processing the request.` });
+        return
+    }
+
+    // Retrieve and check the difference between total_count and tokens_transferred
+    try {
+        //const tokenRow = await dbGetAsync(`SELECT total_count, tokens_transferred FROM token_level_details WHERE faucetID = ?`, [FAUCET_ID]);
+        //const difference = tokenRow.total_count - tokenRow.tokens_transferred;
+
+        const getAccountInfoUrl = `${nodeAddress}/api/get-account-info?did=${faucetDid}`;
+
+        const response = await axios.get(getAccountInfoUrl, {
+            headers: {
+                Accept: "application/json",
+            },
+        });
+
+
+
+        if (response.data && response.data.account_info && response.data.account_info.length > 0) {
+            const rbtAmount = response.data.account_info[0].rbt_amount;
+            console.log("rbt Amount : ", rbtAmount)
+
+            if (rbtAmount < 50) {
+                // First API request
+                const firstApiUrl = `${nodeAddress}/api/generate-faucettest-token`;
+                const firstRequestData = {
+                    did: "bafybmibexoa7owxdkjzfcg3ff3elqthkxsbaeznqoqq65gx6t2xkvm52fe",
+                    token_count: 100,
+                };
+
+                const firstResponse = await axios.post(firstApiUrl, firstRequestData, {
+                    headers: {
+                        'Accept': 'application/json',
+                        'Content-Type': 'application/json'
+                    }
+                });
+
+                const id = firstResponse.data.result.id;
+                console.log(id)
+
+                // Second API request
+                const secondApiUrl = `${nodeAddress}/api/signature-response`;
+                const secondRequestData = {
+                    id: id,
+                    password: 'mypassword'
+                };
+
+                const secondResponse = await axios.post(secondApiUrl, secondRequestData, {
+                    headers: {
+                        'Accept': 'application/json',
+                        'Content-Type': 'application/json'
+                    }
+                });
+
+                console.log('Second API Response:', secondResponse.data);
+            }
+        }
+    } catch (error) {
+        console.error('Error fetching token level details:', error);
+    }
 });
+
+
 
 // Start the server after initializing the counter
 initializeCounter().then(() => {
