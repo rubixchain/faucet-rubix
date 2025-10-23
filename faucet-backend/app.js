@@ -46,6 +46,7 @@ function calculateSHA3_256Hash(number) {
 const readCounterFromFile = async () => {
     try {
         const data = await fs.readFile(counterFilePath, 'utf8');
+        console.log("sdasasd: ", data)
         return JSON.parse(data).counter;
     } catch (error) {
         if (error.code === 'ENOENT') {
@@ -93,7 +94,7 @@ app.use('/increment', (req, res, next) => {
     if (source_ip === sourceIp) {
         next(); // Skip the rate limiter for this IP
     } else {
-        limiter(req, res, next); // Apply the rate limiter
+        next()
     }
 });
 
@@ -103,39 +104,39 @@ const requestTimeoutInMilliSeconds = process.env.REQUEST_TIMEOUT_IN_SECONDS * 10
 app.post('/increment', async (req, res) => {
     const nodeAddress = process.env.RUBIX_NODE_ADDRESS
     if (nodeAddress === "") {
-        return res.status(500).send('RUBIX_NODE_ADDRESS is not set')
+        console.error('RUBIX_NODE_ADDRESS is not set')
+        res.status(500).send({"error": "internal server error"})
     }
 
     const { username } = req.body;
 
     if (!username || typeof username !== 'string') {
-        return res.status(400).send('Username is required and must be a string');
+        res.status(400).send({'error': 'username is required and must be a string'});
     }
 
     const currentTime = Date.now();
 
     db.get('SELECT timestamp FROM users WHERE username = ?', [username], (err, row) => {
         if (err) {
-            return res.status(500).send('Database error');
+            res.status(500).send({"error": 'Database error'});
         }
 
         if (row) {
             const lastRequestTime = row.timestamp;
             if (currentTime - lastRequestTime < requestTimeoutInMilliSeconds) {
-                return res.status(429).send('Request denied. Try again after one hour.');
+                res.status(429).send({"error": 'Request denied. Try again after one hour.'});
             }
         }
 
         // Update timestamp and increment counter
         db.run('REPLACE INTO users (username, timestamp) VALUES (?, ?)', [username, currentTime], async (err) => {
             if (err) {
-                return res.status(500).send('Database error');
+                res.status(500).send({"error": 'Database error'});
             }
 
             counter++;
             await writeCounterToFile(counter);
             const hash = calculateSHA3_256Hash(counter);
-            res.send(`Token value: ${hash}`);
         });
 
         const axios = require('axios');
@@ -146,8 +147,8 @@ app.post('/increment', async (req, res) => {
         const rbtTransferAPIRequest = {
           comment: "",
           receiver: username,
-          sender: "bafybmiftqpvkq6sibrpjr3biallzbrmdwumlkwa37spo7iwdaxqpcpgdgm",
-          tokenCount: 1.0,
+          sender: process.env.FAUCET_DID,
+          tokenCount: parseFloat(process.env.FAUCET_REQUEST_AMOUNT),
           type: 2
         };
         
@@ -164,10 +165,15 @@ app.post('/increment', async (req, res) => {
         })
         .then(response => {
           // Extract data from the first response
+          const apiRespBody = response.data;
+          if (!apiRespBody["status"]) {
+            console.error("error occured while calling RBT Transfer API, error: ", apiRespBody["message"])
+            res.status(500).send({"error": "internal server error"})
+            return
+          }
+
           const id = response.data.result.id;
 
-          console.log('id:', id);
-        
           // Prepare the second request data using the response from the first request
           const secondRequestData = {
             id: id, // Replace with actual key from first response
@@ -184,11 +190,19 @@ app.post('/increment', async (req, res) => {
         })
         .then(response => {
           // Handle the response from the second API request
+          const reqAmtValue = parseFloat(process.env.FAUCET_REQUEST_AMOUNT).toFixed(3)
           console.log('Second API Response:', response.data);
+          
+          res.status(200).send({
+            "message": `${reqAmtValue} RBT has been transferred successfully to ${username}`
+          })
         })
         .catch(error => {
           // Handle errors from either request
           console.error('Error:', error);
+            res.send(500).send({
+                "error": `failed to transfer token to ${username}, err: ${error}`
+            })
         });
 
     });
