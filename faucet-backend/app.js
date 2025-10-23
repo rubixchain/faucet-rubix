@@ -1,3 +1,5 @@
+require('dotenv').config();
+
 const express = require('express');
 const fs = require('fs-extra');
 const sqlite3 = require('sqlite3').verbose();
@@ -5,7 +7,13 @@ const cors = require('cors');
 const rateLimit = require('express-rate-limit');
 const helmet = require('helmet'); // for security headers
 const app = express();
-const port = 3001;
+
+const port = process.env.SERVER_PORT;
+if (port === undefined) {
+    console.error("SERVER_PORT env was not provided")
+    return
+}
+
 const crypto = require('crypto');
 const axios = require('axios');
 const counterFilePath = 'counter.json';
@@ -62,9 +70,12 @@ const initializeCounter = async () => {
     counter = await readCounterFromFile();
 };
 
+const sourceIp = process.env.ALLOWED_IP
+const origin = process.env.ORIGIN
+
 app.use(express.json());
 app.use(cors({
-    origin: 'http://103.209.145.177:3000',
+    origin: origin,
     methods: ['GET', 'POST','OPTIONS'],
     allowedHeaders: ['Content-Type'],
 }));
@@ -79,15 +90,22 @@ const limiter = rateLimit({
 });
 app.use('/increment', (req, res, next) => {
     const source_ip = req.ip; // Get the requester's IP address
-    if (source_ip === '103.209.145.177') {
+    if (source_ip === sourceIp) {
         next(); // Skip the rate limiter for this IP
     } else {
         limiter(req, res, next); // Apply the rate limiter
     }
 });
 
+const requestTimeoutInMilliSeconds = process.env.REQUEST_TIMEOUT_IN_SECONDS * 1000
+
 // Increment the counter and save it to the file
 app.post('/increment', async (req, res) => {
+    const nodeAddress = process.env.RUBIX_NODE_ADDRESS
+    if (nodeAddress === "") {
+        return res.status(500).send('RUBIX_NODE_ADDRESS is not set')
+    }
+
     const { username } = req.body;
 
     if (!username || typeof username !== 'string') {
@@ -95,7 +113,6 @@ app.post('/increment', async (req, res) => {
     }
 
     const currentTime = Date.now();
-    const oneHour = 3600000;
 
     db.get('SELECT timestamp FROM users WHERE username = ?', [username], (err, row) => {
         if (err) {
@@ -104,7 +121,7 @@ app.post('/increment', async (req, res) => {
 
         if (row) {
             const lastRequestTime = row.timestamp;
-            if (currentTime - lastRequestTime < oneHour) {
+            if (currentTime - lastRequestTime < requestTimeoutInMilliSeconds) {
                 return res.status(429).send('Request denied. Try again after one hour.');
             }
         }
@@ -121,55 +138,12 @@ app.post('/increment', async (req, res) => {
             res.send(`Token value: ${hash}`);
         });
 
-        // var id;
-        // const apiUrl = 'http://localhost:20000/api/initiate-rbt-transfer';
-
-        //     const requestData = {
-        //       comment: "",
-        //       receiver: "bafybmiesr2x772guu7o4qfxywpdyqixlfcvpbocr4jgyij4ou2ff4l55aq",
-        //       sender: "bafybmiftqpvkq6sibrpjr3biallzbrmdwumlkwa37spo7iwdaxqpcpgdgm",
-        //       tokenCount: 1.0,
-        //       type: 0
-        //     };
-            
-        //     axios.post(apiUrl, requestData, {
-        //       headers: {
-        //         'Accept': 'application/json',
-        //         'Content-Type': 'application/json'
-        //       }
-        //     })
-        //       .then(response => {
-        //         console.log('Response:', response.data.result.id);
-        //       })
-        //       .catch(error => {
-        //         console.error('Error:', error.response.data);
-        //       });
-
-        //       const signapiUrl = 'http://localhost:20000/api/initiate-rbt-transfer';
-
-        //     const signrequestData = {
-        //       id: id,
-        //       password: "password",
-        //     };
-            
-        //     axios.post(signapiUrl, signrequestData, {
-        //       headers: {
-        //         'Accept': 'application/json',
-        //         'Content-Type': 'application/json'
-        //       }
-        //     })
-        //       .then(response => {
-        //         console.log('Response:', response.data.result.id);
-        //       })
-        //       .catch(error => {
-        //         console.error('Error:', error.response.data);
-        //       });
-
         const axios = require('axios');
 
         // First API URL and data
-        const firstApiUrl = 'http://localhost:20000/api/initiate-rbt-transfer';
-        const firstRequestData = {
+        const rbtTransferAPIObj = new URL('/api/initiate-rbt-transfer', nodeAddress)
+        const rbtTransferAPIUrl = rbtTransferAPIObj.href;
+        const rbtTransferAPIRequest = {
           comment: "",
           receiver: username,
           sender: "bafybmiftqpvkq6sibrpjr3biallzbrmdwumlkwa37spo7iwdaxqpcpgdgm",
@@ -178,10 +152,11 @@ app.post('/increment', async (req, res) => {
         };
         
         // Second API URL
-        const secondApiUrl = 'http://localhost:20000/api/signature-response';
+        const signatureResponseObj = new URL('/api/signature-response', nodeAddress)
+        const signatureResponseAPIUrl = signatureResponseObj.href;
         
         // Make the first API request
-        axios.post(firstApiUrl, firstRequestData, {
+        axios.post(rbtTransferAPIUrl, rbtTransferAPIRequest, {
           headers: {
             'Accept': 'application/json',
             'Content-Type': 'application/json'
@@ -200,7 +175,7 @@ app.post('/increment', async (req, res) => {
           };
         
           // Make the second API request
-          return axios.post(secondApiUrl, secondRequestData, {
+          return axios.post(signatureResponseAPIUrl, secondRequestData, {
             headers: {
               'Accept': 'application/json',
               'Content-Type': 'application/json'
@@ -221,7 +196,7 @@ app.post('/increment', async (req, res) => {
 
 // Start the server after initializing the counter
 initializeCounter().then(() => {
-    app.listen(port,'0.0.0.0', () => {
+    app.listen(port, () => {
         console.log(`Server is running on http://localhost:${port}`);
     });
 }).catch(err => {
