@@ -14,7 +14,7 @@ function App() {
     setLoading(true)
 
     try {
-      const response = await fetch('http://localhost:3000/increment', {
+      const response = await fetch('/increment', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
