@@ -18,16 +18,10 @@ const origin = process.env.ORIGIN;
 const requestWaitTimeInMilliseconds =
   process.env.REQUEST_WAIT_TIME_IN_SECONDS * 1000;
 const nodeAddress = process.env.RUBIX_NODE_ADDRESS;
-const port = process.env.SERVER_PORT;
+const port = process.env.SERVER_PORT | 3002;
 const tokenRequestAmount = parseFloat(process.env.FAUCET_REQUEST_AMOUNT);
 const faucetDid = process.env.FAUCET_DID;
 
-if (tokenRequestAmount > 1.0) {
-  console.error(
-    `invalid value for FAUCET_REQUEST_AMOUNT which is ${tokenRequestAmount}`
-  );
-  return;
-}
 
 // Initialize database
 const db = new sqlite3.Database(dbFilePath, (err) => {
@@ -225,13 +219,7 @@ app.post("/api/update-token-value", (req, res) => {
 });
 
 const faucetQuorumList = [
-  "bafybmidhksbjcxypelpd2pmiypikttqntrukr55lmdm34oteiile6lu2jm",
-  "bafybmihwoigjddxqpqoyn7e67w2agxx2apfahl676fkijtlzj2vwmb7v44",
-  "bafybmibeoj772f5bvkoljeymipgzu7p4j32j73tc4detm4wpc5hebolvd4",
-  "bafybmigemcjb6ivksuyiuf23geykag3tvw4jtuxqaesjpggrlnujmowx2i",
-  "bafybmid6gcm6dcubsacyxpg7nmmpzo7czia5cs57s5l2xtn364ijqgqwhe",
-  "bafybmicmngm6twtypkwebnzubwx6k2zl2r7inao3vhxjdl7c5mqa2avezm",
-  "bafybmihnveuzhv66t54r7s5oorwlhf2bwdxsshrjsmwgkdupcdhi2bqasa",
+  "bafybmihov5kiw3ngsdkv64vy2fgqba4j32teb4ov2ttv5zzfksiubdlvje",
 ];
 // Define the endpoint to add faucet quorums
 app.get("/api/get-faucet-quorums", (req, res) => {
@@ -345,14 +333,6 @@ app.post("/increment", async (req, res) => {
     const hash = calculateSHA3_256Hash(counter);
     console.log("Calculated Hash:", hash);
     // First API request
-    const initiateTransferURL = `${nodeAddress}/api/initiate-rbt-transfer`;
-    const initiateTransferData = {
-      comment: "",
-      receiver: username,
-      sender: faucetDid,
-      tokenCount: tokenRequestAmount,
-      type: 2,
-    };
 
     try {
       //const tokenRow = await dbGetAsync(`SELECT total_count, tokens_transferred FROM token_level_details WHERE faucetID = ?`, [FAUCET_ID]);
@@ -421,6 +401,15 @@ app.post("/increment", async (req, res) => {
     }
 
     console.log("Initiating RBT Transfer:", initiateTransferData);
+
+    const initiateTransferURL = `${nodeAddress}/api/initiate-rbt-transfer`;
+    const initiateTransferData = {
+      comment: "",
+      receiver: username,
+      sender: faucetDid,
+      tokenCount: tokenRequestAmount,
+      type: 2,
+    };
 
     const initiateTransferResponse = await axios.post(
       initiateTransferURL,
