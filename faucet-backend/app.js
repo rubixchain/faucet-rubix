@@ -219,7 +219,7 @@ app.post("/api/update-token-value", (req, res) => {
 });
 
 const faucetQuorumList = [
-  "bafybmihov5kiw3ngsdkv64vy2fgqba4j32teb4ov2ttv5zzfksiubdlvje",
+  "bafybmihgu2nt2khfbnnafml7z4omls2u3f2gaiyntxzwv7zspwabwssvam",
 ];
 // Define the endpoint to add faucet quorums
 app.get("/api/get-faucet-quorums", (req, res) => {
@@ -338,7 +338,7 @@ app.post("/increment", async (req, res) => {
       //const tokenRow = await dbGetAsync(`SELECT total_count, tokens_transferred FROM token_level_details WHERE faucetID = ?`, [FAUCET_ID]);
       //const difference = tokenRow.total_count - tokenRow.tokens_transferred;
 
-      const getAccountInfoUrl = `${nodeAddress}/api/get-account-info?did=${username}`;
+      const getAccountInfoUrl = `${nodeAddress}/rubix/v1/dids/${faucetDid}/balances/rbt`;
 
       const response = await axios.get(getAccountInfoUrl, {
         headers: {
@@ -346,19 +346,24 @@ app.post("/increment", async (req, res) => {
         },
       });
       console.log("token balance response : ", response.data);
-      if (
-        response.data &&
-        response.data.account_info &&
-        response.data.account_info.length > 0
-      ) {
-        const rbtAmount = response.data.account_info[0].rbt_amount;
+      const responseBody = response.data
+      if (!responseBody["status"]) {
+        console.error(
+          "error occured while calling RBT Balance API, error: ",
+          apiRespBody["message"]
+        );
+        res.status(500).send({ error: "internal server error" });
+        return;
+      }
+      if (responseBody["status"]) {
+        const rbtAmount = responseBody.result.balance;
         console.log("rbt Amount : ", rbtAmount);
 
         if (rbtAmount < 50) {
           // First API request
           const firstApiUrl = `${nodeAddress}/api/generate-faucettest-token`;
           const firstRequestData = {
-            did: process.env.FAUCET_DID,
+            did: faucetDid,
             token_count: 100,
           };
 
@@ -377,7 +382,7 @@ app.post("/increment", async (req, res) => {
           console.log(id);
 
           // Second API request
-          const secondApiUrl = `${nodeAddress}/api/signature-response`;
+          const secondApiUrl = `${nodeAddress}/rubix/v1/signature`;
           const secondRequestData = {
             id: id,
             password: "mypassword",
@@ -400,15 +405,14 @@ app.post("/increment", async (req, res) => {
       console.error("Error fetching token level details:", error);
     }
 
-    console.log("Initiating RBT Transfer:", initiateTransferData);
-
-    const initiateTransferURL = `${nodeAddress}/api/initiate-rbt-transfer`;
+    const initiateTransferURL = `${nodeAddress}/rubix/v1/tx`;
     const initiateTransferData = {
-      comment: "",
-      receiver: username,
-      sender: faucetDid,
-      tokenCount: tokenRequestAmount,
-      type: 2,
+      "initiator": faucetDid,
+      "owner": username,
+      "tokens": {
+          "rbt": tokenRequestAmount,
+      },
+      "memo": ""
     };
 
     const initiateTransferResponse = await axios.post(
@@ -434,7 +438,7 @@ app.post("/increment", async (req, res) => {
     const id = initiateTransferResponseBody.result.id;
 
     // Second API request
-    const signatureResponseURL = `${nodeAddress}/api/signature-response`;
+    const signatureResponseURL = `${nodeAddress}/rubix/v1/signature`;
     const signatureResponseData = {
       id: id,
       password: "mypassword",
@@ -457,9 +461,7 @@ app.post("/increment", async (req, res) => {
 
     if (signatureResponse.data && signatureResponse.data.message) {
       if (
-        signatureResponse.data.message.includes(
-          "Transfer finished successfully"
-        )
+        signatureResponse.data.status
       ) {
         // Update tokens_transferred in the database
         await dbRunAsync(

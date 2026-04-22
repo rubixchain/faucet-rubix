@@ -25,14 +25,14 @@ function App() {
       })
       const data = await response.json()
 
-      if (response.ok) {
+      if (response.ok && data.success) {
         toast.success('Tokens sent successfully!', {
           duration: 4000,
           position: 'top-center',
         })
         setDid('')
       } else {
-        toast.error(data.message || 'Failed to send tokens', {
+        toast.error(data.message || data.error || 'Failed to send tokens', {
           duration: 4000,
           position: 'top-center',
         })
