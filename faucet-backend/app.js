@@ -405,8 +405,6 @@ app.post("/increment", async (req, res) => {
       console.error("Error fetching token level details:", error);
     }
 
-    console.log("Initiating RBT Transfer:", initiateTransferData);
-
     const initiateTransferURL = `${nodeAddress}/rubix/v1/tx`;
     const initiateTransferData = {
       "initiator": faucetDid,
@@ -463,9 +461,7 @@ app.post("/increment", async (req, res) => {
 
     if (signatureResponse.data && signatureResponse.data.message) {
       if (
-        signatureResponse.data.message.includes(
-          "Transfer finished successfully"
-        )
+        signatureResponse.data.status
       ) {
         // Update tokens_transferred in the database
         await dbRunAsync(
